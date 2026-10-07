@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+shopt -s globstar
 
 cd "$(dirname "$0")"
 
