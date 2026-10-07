@@ -37,6 +37,24 @@ function isPrivateIpv4(ip: string): boolean {
   return false;
 }
 
+/**
+ * Expand the tail of an IPv4-mapped IPv6 address into dotted-decimal so it can be handed
+ * to the IPv4 matcher. WHATWG serialises `::ffff:127.0.0.1` as the hex form `::ffff:7f00:1`,
+ * while `dns.lookup` hands back the dotted form, so both spellings are accepted.
+ * Returns null when the tail is neither shape.
+ */
+function expandIpv4MappedTail(tail: string): string | null {
+  if (tail.includes(".")) return tail;
+
+  const groups = tail.split(":");
+  if (groups.length !== 2 || groups.some((group) => !/^[0-9a-f]{1,4}$/.test(group))) {
+    return null;
+  }
+
+  const value = parseInt(groups[0], 16) * 0x10000 + parseInt(groups[1], 16);
+  return `${value >>> 24}.${(value >>> 16) & 0xff}.${(value >>> 8) & 0xff}.${value & 0xff}`;
+}
+
 function isPrivateIpv6(ip: string): boolean {
   const normalized = ip.toLowerCase();
   // Loopback
@@ -47,10 +65,10 @@ function isPrivateIpv6(ip: string): boolean {
   if (normalized.startsWith("fe80:") || normalized.startsWith("fe9") || normalized.startsWith("fea") || normalized.startsWith("feb")) return true;
   // Unique local fc00::/7 (fd00::)
   if (normalized.startsWith("fc") || normalized.startsWith("fd")) return true;
-  // IPv4-mapped IPv6 ::ffff:127.0.0.1
+  // IPv4-mapped IPv6 ::ffff:127.0.0.1, in either its dotted or its hex serialisation
   if (normalized.startsWith("::ffff:")) {
-    const v4 = normalized.replace("::ffff:", "");
-    if (isIP(v4) === 4) return isPrivateIpv4(v4);
+    const v4 = expandIpv4MappedTail(normalized.slice("::ffff:".length));
+    if (v4 !== null && isIP(v4) === 4) return isPrivateIpv4(v4);
   }
   return false;
 }
@@ -79,15 +97,18 @@ export async function validateAndPinUrl(rawUrl: string): Promise<SsrfValidationR
     return { valid: false, error: "Localhost addresses are strictly forbidden" };
   }
 
-  // Check if direct IP provided
-  const directIpVersion = isIP(hostname);
+  // Check if direct IP provided. WHATWG always serialises an IPv6 host with its brackets
+  // ("[::1]"), and isIP() only understands the bare address, so strip them first —
+  // otherwise every IPv6 literal reads as a hostname and falls through to DNS.
+  const bareHostname = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  const directIpVersion = isIP(bareHostname);
   if (directIpVersion === 4) {
-    if (isPrivateIpv4(hostname)) {
+    if (isPrivateIpv4(bareHostname)) {
       return { valid: false, error: `Private/internal IPv4 address '${hostname}' is forbidden` };
     }
     return { valid: true, url: parsedUrl, resolvedIp: hostname };
   } else if (directIpVersion === 6) {
-    if (isPrivateIpv6(hostname)) {
+    if (isPrivateIpv6(bareHostname)) {
       return { valid: false, error: `Private/internal IPv6 address '${hostname}' is forbidden` };
     }
     return { valid: true, url: parsedUrl, resolvedIp: hostname };
