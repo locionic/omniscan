@@ -2,14 +2,20 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import type { FullAuditReport } from "../src/types/index.ts";
 import {
+  AuditReportEmail,
   buildPdfUrl,
   buildReportUrl,
   buildSubject,
+  CategoryCards,
   categoryMetrics,
   clampScore,
+  DownloadButtons,
+  EmailTemplate,
   escapeHtml,
   formatScannedAt,
+  GradeBanner,
   gradeColor,
+  PriorityFixes,
   renderCategoryCards,
   renderDownloadButtons,
   renderEmailHtml,
@@ -17,13 +23,16 @@ import {
   renderGradeBanner,
   renderMeter,
   renderPriorityFixes,
+  ReportEmail,
   safeUrl,
   scoreColor,
 } from "../src/reports/email-template.ts";
 import {
   buildMessage,
   createMemoryTransport,
+  createResendTransport,
   dispatchEmail,
+  dispatchResendEmail,
   EmailValidationError,
   encodeRfc2047,
   formatAddress,

@@ -38,6 +38,8 @@ export interface DispatchEmailInput {
   /** Base64 PDF attached to the email. Omit to send the HTML report only. */
   pdf?: Uint8Array;
   attachmentFilename?: string;
+  /** Resend API key to use for sending if no explicit transport is provided. */
+  resendApiKey?: string;
 }
 
 export interface DispatchResult {
@@ -428,6 +430,139 @@ export function createMemoryTransport(sent: EmailMessage[] = []): EmailTransport
   };
 }
 
+export interface ResendTransportOptions {
+  apiKey?: string;
+  baseUrl?: string;
+  fetch?: typeof fetch;
+}
+
+/**
+ * Resend API email transport dispatcher. Sends audit report emails
+ * via the Resend REST API (POST https://api.resend.com/emails).
+ */
+export function createResendTransport(options: ResendTransportOptions = {}): EmailTransport {
+  const apiKey = options.apiKey ?? process.env.RESEND_API_KEY;
+  const baseUrl = (options.baseUrl ?? process.env.RESEND_BASE_URL ?? "https://api.resend.com").replace(/\/+$/, "");
+  const fetchFn = options.fetch ?? globalThis.fetch;
+
+  return async (message: EmailMessage) => {
+    if (!apiKey) {
+      throw new EmailValidationError("Resend API key is required (pass apiKey option or set RESEND_API_KEY)");
+    }
+
+    const toAddress = message.to.name
+      ? `"${message.to.name.replace(/["\\]/g, "\\$&")}" <${message.to.email}>`
+      : message.to.email;
+
+    // Decode RFC 2047 encoded subject if present so Resend gets a clean UTF-8 string
+    let subject = message.subject;
+    const rfcMatch = subject.match(/^=\?UTF-8\?B\?([A-Za-z0-9+/=]+)\?=$/i);
+    if (rfcMatch) {
+      try {
+        subject = Buffer.from(rfcMatch[1], "base64").toString("utf8");
+      } catch {
+        // preserve original
+      }
+    }
+
+    const payload: {
+      from: string;
+      to: string[];
+      subject: string;
+      html: string;
+      text: string;
+      headers?: Record<string, string>;
+      attachments?: Array<{ filename: string; content: string }>;
+    } = {
+      from: message.from,
+      to: [toAddress],
+      subject,
+      html: message.html,
+      text: message.text,
+    };
+
+    if (message.headers && Object.keys(message.headers).length > 0) {
+      const skipHeaders = new Set(["content-type", "mime-version", "to", "from", "subject"]);
+      const customHeaders: Record<string, string> = {};
+      for (const [k, v] of Object.entries(message.headers)) {
+        if (!skipHeaders.has(k.toLowerCase())) {
+          customHeaders[k] = v;
+        }
+      }
+      if (Object.keys(customHeaders).length > 0) {
+        payload.headers = customHeaders;
+      }
+    }
+
+    if (message.attachments && message.attachments.length > 0) {
+      payload.attachments = message.attachments.map((att) => ({
+        filename: att.filename,
+        content: Buffer.from(att.content).toString("base64"),
+      }));
+    }
+
+    const response = await fetchFn(`${baseUrl}/emails`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      let errDetail = `HTTP ${response.status}`;
+      try {
+        const bodyText = await response.text();
+        try {
+          const json = JSON.parse(bodyText);
+          if (json.message) {
+            errDetail = json.message;
+          } else if (json.error) {
+            errDetail = typeof json.error === "string" ? json.error : JSON.stringify(json.error);
+          } else if (bodyText) {
+            errDetail = bodyText;
+          }
+        } catch {
+          if (bodyText) errDetail = bodyText;
+        }
+      } catch {
+        // ignore
+      }
+      throw new Error(`Resend API failed (${response.status}): ${errDetail}`);
+    }
+
+    try {
+      const bodyText = await response.text();
+      const json = JSON.parse(bodyText);
+      if (json?.id) {
+        message.headers["X-Resend-Id"] = String(json.id);
+      }
+    } catch {
+      // response might be empty or non-JSON
+    }
+  };
+}
+
+export interface DispatchResendInput extends Omit<DispatchEmailInput, "transport"> {
+  apiKey?: string;
+  baseUrl?: string;
+  fetch?: typeof fetch;
+}
+
+/**
+ * Convenience helper to dispatch an audit report directly via Resend.
+ */
+export async function dispatchResendEmail(input: DispatchResendInput): Promise<DispatchResult> {
+  const apiKey = input.apiKey ?? input.resendApiKey ?? process.env.RESEND_API_KEY;
+  const transport = createResendTransport({
+    apiKey,
+    baseUrl: input.baseUrl,
+    fetch: input.fetch,
+  });
+  return dispatchEmail({ ...input, transport });
+}
+
 export function resolveFromAddress(input: DispatchEmailInput): string {
   const from = input.from ?? process.env.EMAIL_FROM ?? "OmniScan <reports@omniscan.io>";
   assertHeaderSafe(from, "From address");
@@ -448,12 +583,16 @@ export async function dispatchEmail(input: DispatchEmailInput): Promise<Dispatch
     sent: false,
   };
 
-  if (!input.transport) {
+  const transport =
+    input.transport ??
+    (input.resendApiKey ? createResendTransport({ apiKey: input.resendApiKey }) : undefined);
+
+  if (!transport) {
     return { ...base, sent: false, error: "No transport supplied; message was rendered but not sent" };
   }
 
   try {
-    await input.transport(message);
+    await transport(message);
     return { ...base, sent: true };
   } catch (err) {
     return { ...base, sent: false, error: (err as Error).message };

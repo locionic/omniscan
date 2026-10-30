@@ -435,3 +435,36 @@ export function renderEmailText(report: FullAuditReport, options: EmailTemplateO
 
   return lines.join("\n");
 }
+
+export interface ReportEmailProps {
+  report: FullAuditReport;
+  options?: EmailTemplateOptions;
+}
+
+/**
+ * Responsive report email template component for React Email composition.
+ * Returns the fully rendered responsive HTML document.
+ */
+export function ReportEmail(props: ReportEmailProps): string {
+  return renderEmailHtml(props.report, props.options);
+}
+
+export const AuditReportEmail = ReportEmail;
+export const EmailTemplate = ReportEmail;
+
+export function GradeBanner(props: { report: FullAuditReport }): string {
+  return renderGradeBanner(props.report);
+}
+
+export function CategoryCards(props: { report: FullAuditReport }): string {
+  return renderCategoryCards(props.report);
+}
+
+export function PriorityFixes(props: { report: FullAuditReport }): string {
+  return renderPriorityFixes(props.report);
+}
+
+export function DownloadButtons(props: { report: FullAuditReport; options?: EmailTemplateOptions }): string {
+  return renderDownloadButtons(props.report, props.options);
+}
+
